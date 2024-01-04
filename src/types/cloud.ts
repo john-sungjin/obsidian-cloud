@@ -1,3 +1,31 @@
+import { Events, EventRef, CanvasNode } from "obsidian";
+
+export const NODE_ADD_EVENT = "cloud-canvas-node-added";
+export const SETTINGS_CHANGE_EVENT = "cloud-settings-change";
+export interface CloudEvents extends Events {
+	on(
+		name: typeof NODE_ADD_EVENT,
+		callback: (node: CanvasNode) => void
+	): EventRef;
+
+	on(
+		name: typeof SETTINGS_CHANGE_EVENT,
+		callback: (settings: CloudSettings) => void
+	): EventRef;
+
+	trigger(name: typeof NODE_ADD_EVENT, node: CanvasNode): void;
+	trigger(name: typeof SETTINGS_CHANGE_EVENT, settings: CloudSettings): void;
+
+	off(
+		name: typeof NODE_ADD_EVENT,
+		callback: (node: CanvasNode) => void
+	): void;
+	off(
+		name: typeof SETTINGS_CHANGE_EVENT,
+		callback: (settings: CloudSettings) => void
+	): void;
+}
+
 export interface CloudSettings {
 	dailyCanvasFolder: string;
 	latestDailyCanvasDate: string | null;

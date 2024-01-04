@@ -1,34 +1,37 @@
+import { around, dedupe } from "monkey-around";
 import {
 	App,
-	Editor,
-	MarkdownView,
-	Modal,
-	Notice,
+	Canvas,
+	CanvasNode,
+	CanvasView,
+	Component,
+	FileView,
 	Plugin,
 	PluginSettingTab,
 	Setting,
 	TFile,
 	moment,
-	ItemView,
-	FileView,
-	Component,
-	NODE_ADD_EVENT,
 	setIcon,
-	Canvas,
-	CanvasView,
-	CanvasNode,
-	SETTINGS_CHANGE_EVENT,
+	Events,
 } from "obsidian";
-import { CanvasData, CanvasFileData } from "obsidian/canvas";
-import { around, dedupe } from "monkey-around";
-import { DEFAULT_SETTINGS, CloudSettings } from "types/cloud";
+import { CanvasData } from "obsidian/canvas";
+import {
+	CloudSettings,
+	DEFAULT_SETTINGS,
+	NODE_ADD_EVENT,
+	SETTINGS_CHANGE_EVENT,
+	CloudEvents,
+} from "types/cloud";
 
 export default class CloudPlugin extends Plugin {
+	events: CloudEvents;
 	settings: CloudSettings;
 
 	async onload() {
 		await this.loadSettings();
 		this.addSettingTab(new CloudSettingTab(this.app, this));
+
+		this.events = new Events() as CloudEvents;
 
 		// Open today's daily canvas on startup
 		this.app.workspace.onLayoutReady(async () => {
@@ -146,7 +149,7 @@ export default class CloudPlugin extends Plugin {
 			pinnedNodeIds: Array.from(this.settings.pinnedNodeIds),
 		});
 		await this.saveData(dataToSave);
-		this.app.workspace.trigger(SETTINGS_CHANGE_EVENT, dataToSave);
+		this.events.trigger(SETTINGS_CHANGE_EVENT, dataToSave);
 	}
 
 	// Date format: YYYY-MM-DD
@@ -280,7 +283,7 @@ export default class CloudPlugin extends Plugin {
 			console.log(
 				"Failed to patch nodes. Registering event to patch nodes when one is available."
 			);
-			const patchNodesEvent = this.app.workspace.on(
+			const patchNodesEvent = this.events.on(
 				NODE_ADD_EVENT,
 				(node: CanvasNode) => {
 					console.log("Node added. Attempting to patch node");
@@ -295,12 +298,24 @@ export default class CloudPlugin extends Plugin {
 	}
 
 	patchCanvas(): void | Error {
+		console.log("Attempting to patch canvas.");
 		// To patch the canvas prototype, we need an instance of it.
 		const canvas = this.app.workspace.getLeavesOfType("canvas").first()
 			?.view?.canvas;
 		if (canvas === undefined) {
 			return new Error("No canvas open");
 		}
+
+		const triggerNodeAddEvent = (node: CanvasNode) => {
+			this.events.trigger(NODE_ADD_EVENT, node);
+		};
+
+		const handleDeleteSelection = (canvas: Canvas) => {
+			// TODO: add unpin actions to history
+			canvas.selection.forEach((node) => {
+				this.unpinNode(node);
+			});
+		};
 
 		const canvasPrototype: Canvas = Object.getPrototypeOf(canvas);
 		this.register(
@@ -313,7 +328,19 @@ export default class CloudPlugin extends Plugin {
 						originalAddNode,
 						function (this: Canvas, node: CanvasNode) {
 							originalAddNode.call(this, node);
-							this.app.workspace.trigger(NODE_ADD_EVENT, node);
+							triggerNodeAddEvent(node);
+						}
+					);
+				},
+				deleteSelection: function (
+					originalDeleteSelection: (this: Canvas) => void
+				) {
+					return dedupe(
+						"deleteSelection",
+						originalDeleteSelection,
+						function (this: Canvas) {
+							handleDeleteSelection(this);
+							originalDeleteSelection.call(this);
 						}
 					);
 				},
@@ -323,6 +350,7 @@ export default class CloudPlugin extends Plugin {
 	}
 
 	patchNodes() {
+		console.log("Attempting to patch nodes.");
 		// To patch canvas nodes, we need a canvas instance that has nodes
 		const canvas = this.app.workspace.getLeavesOfType("canvas").first()
 			?.view?.canvas;
@@ -358,6 +386,18 @@ export default class CloudPlugin extends Plugin {
 						}
 					);
 				},
+				destroy: function (
+					originalDestroy: (this: CanvasNode) => void
+				) {
+					return dedupe(
+						"destroy",
+						originalDestroy,
+						function (this: CanvasNode) {
+							originalDestroy.call(this);
+							this.nodeHeader!.unload();
+						}
+					);
+				},
 			})
 		);
 
@@ -373,16 +413,17 @@ export default class CloudPlugin extends Plugin {
 	}
 
 	addHeaderToNode(node: CanvasNode) {
-		if (node.isPatched) {
+		if (node.nodeHeader !== undefined) {
 			console.log("Tried to patch node twice: ", node);
 			return;
 		}
 		const nodeHeader = new NodeHeader(node, this);
+		nodeHeader.load();
 		node.containerEl.insertBefore(
 			nodeHeader.element,
 			node.containerEl.firstChild
 		);
-		node.isPatched = true;
+		node.nodeHeader = nodeHeader;
 	}
 }
 
@@ -416,7 +457,7 @@ class CloudSettingTab extends PluginSettingTab {
 	}
 }
 
-class NodeHeader extends Component {
+export class NodeHeader extends Component {
 	// Can only pin nodes on the latest daily canvas
 	// Should be aligned to today
 	isLatestDailyCanvas: boolean;
@@ -430,14 +471,15 @@ class NodeHeader extends Component {
 		super();
 		this.node = node;
 		this.plugin = plugin;
-		this.isLatestDailyCanvas = this.plugin.canvasIsLatestDailyCanvas(
-			node.canvas
-		);
+	}
+
+	onload() {
+		super.onload();
 
 		this.element = createEl("div", {
 			cls: "cloud-node-header",
 			attr: {
-				"data-node-id": node.id,
+				"data-node-id": this.node.id,
 			},
 		});
 		this.pinButton = createEl("button", {
@@ -445,9 +487,9 @@ class NodeHeader extends Component {
 		});
 		this.pinButton.addEventListener("click", () => {
 			if (this.isPinned()) {
-				this.plugin.unpinNode(node);
+				this.plugin.unpinNode(this.node);
 			} else {
-				this.plugin.pinNode(node);
+				this.plugin.pinNode(this.node);
 			}
 		});
 		setIcon(this.pinButton, "pin");
@@ -455,8 +497,9 @@ class NodeHeader extends Component {
 
 		this.updatePinButtonVisibility();
 		this.updatePinButtonState();
+
 		this.registerEvent(
-			this.plugin.app.workspace.on(
+			this.plugin.events.on(
 				SETTINGS_CHANGE_EVENT,
 				(settings: CloudSettings) => {
 					this.updatePinButtonVisibility();
@@ -464,6 +507,11 @@ class NodeHeader extends Component {
 				}
 			)
 		);
+	}
+
+	onunload() {
+		this.element.remove();
+		super.onunload();
 	}
 
 	isPinned(): boolean {

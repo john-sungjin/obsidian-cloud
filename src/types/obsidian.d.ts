@@ -6,26 +6,13 @@
 // Is intentionally minimal
 
 import "obsidian";
-import { CloudSettings } from "./cloud";
+import { NodeHeader } from "main";
 
 declare module "obsidian" {
-	const NODE_ADD_EVENT = "cloud-canvas-node-added";
-	const SETTINGS_CHANGE_EVENT = "cloud-settings-change";
-
 	interface Workspace {
 		getLeavesOfType(viewType: "canvas"): (Omit<WorkspaceLeaf, "view"> & {
 			view: CanvasView;
 		})[];
-
-		on(
-			name: typeof NODE_ADD_EVENT,
-			cb: (node: CanvasNode) => any
-		): EventRef;
-
-		on(
-			name: typeof SETTINGS_CHANGE_EVENT,
-			cb: (settings: CloudSettings) => any
-		): EventRef;
 	}
 
 	abstract class CanvasView extends EditableFileView {
@@ -49,9 +36,13 @@ declare module "obsidian" {
 		initialized: boolean;
 		// Runs when the node is first rendered
 		initialize(): void;
+		// I think this runs to delete the node
+		// Detach is similar, but destroy calls detach
+		destroy(): void;
 
-		// Custom property to detect whether a node has been patched
-		isPatched: boolean | undefined;
+		// Custom property to store the header of the node
+		// Note that this is a circular dependency
+		nodeHeader: NodeHeader | undefined;
 	}
 
 	interface CreateNodeOptions {
@@ -68,7 +59,10 @@ declare module "obsidian" {
 		nodes: Map<string, CanvasNode>;
 		selection: Set<CanvasNode>;
 
+		// Add and remove node are called both for creating/deleting
+		// and for closing/opening different files
 		addNode(node: CanvasNode): void;
+		removeNode(node: CanvasNode): void;
 
 		createTextNode(
 			options: CreateNodeOptions & {

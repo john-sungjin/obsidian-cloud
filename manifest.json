@@ -1,0 +1,9 @@
+{
+	"id": "cloud-plugin",
+	"name": "Cloud",
+	"version": "1.0.0",
+	"minAppVersion": "0.15.0",
+	"description": "My custom plugin for Obsidian.",
+	"author": "John Kim",
+	"isDesktopOnly": false
+}

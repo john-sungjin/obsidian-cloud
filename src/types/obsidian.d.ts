@@ -64,6 +64,9 @@ declare module "obsidian" {
 		addNode(node: CanvasNode): void;
 		removeNode(node: CanvasNode): void;
 
+		// Aha. This is for actually deleting things.
+		deleteSelection(): void;
+
 		createTextNode(
 			options: CreateNodeOptions & {
 				text: string;

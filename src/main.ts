@@ -11,29 +11,17 @@ import {
 	moment,
 	ItemView,
 	FileView,
+	Component,
+	NODE_ADD_EVENT,
+	setIcon,
+	Canvas,
+	CanvasView,
+	CanvasNode,
+	SETTINGS_CHANGE_EVENT,
 } from "obsidian";
-import { Canvas, CanvasView } from "custom";
 import { CanvasData, CanvasFileData } from "obsidian/canvas";
-
-interface CloudSettings {
-	dailyCanvasFolder: string;
-	latestDailyCanvasDate: string | null;
-	pinnedNodeIds: Set<string>;
-}
-// test
-
-const DEFAULT_SETTINGS: CloudSettings = {
-	dailyCanvasFolder: "daily-canvas",
-	latestDailyCanvasDate: null,
-	pinnedNodeIds: new Set(),
-};
-
-// TEST SETTINGS for data.json
-// {
-//   "dailyCanvasFolder": "daily",
-//   "latestDailyCanvasDate": "2024-01-02",
-//   "pinnedNodeIds": {"09a5499c3b1d4cee", "3ae38435e11bf3cf"}
-// }
+import { around, dedupe } from "monkey-around";
+import { DEFAULT_SETTINGS, CloudSettings } from "types/cloud";
 
 export default class CloudPlugin extends Plugin {
 	settings: CloudSettings;
@@ -45,6 +33,7 @@ export default class CloudPlugin extends Plugin {
 		// Open today's daily canvas on startup
 		this.app.workspace.onLayoutReady(async () => {
 			this.openTodayDailyCanvasFile();
+			this.loadPatches();
 		});
 
 		// Command to open today's daily canvas
@@ -115,17 +104,23 @@ export default class CloudPlugin extends Plugin {
 		if (checking) {
 			return true;
 		}
-
-		const selectedNodeIds = new Set<string>();
-		canvas.selection.forEach((node) => selectedNodeIds.add(node.id));
-		selectedNodeIds.forEach((id) => {
+		canvas.selection.forEach((node) => {
 			if (pin) {
-				this.settings.pinnedNodeIds.add(id);
+				this.pinNode(node);
 			} else {
-				this.settings.pinnedNodeIds.delete(id);
+				this.unpinNode(node);
 			}
 		});
-		console.log("Pinned node ids: ", this.settings.pinnedNodeIds);
+		this.saveSettings();
+	}
+
+	pinNode(node: CanvasNode): void {
+		this.settings.pinnedNodeIds.add(node.id);
+		this.saveSettings();
+	}
+
+	unpinNode(node: CanvasNode): void {
+		this.settings.pinnedNodeIds.delete(node.id);
 		this.saveSettings();
 	}
 
@@ -140,17 +135,18 @@ export default class CloudPlugin extends Plugin {
 	}
 
 	async loadSettings() {
-		console.log("Default Settings: ", DEFAULT_SETTINGS);
-		console.log("Loaded Data: ", await this.loadData());
-		this.settings = Object.assign(
-			{},
-			DEFAULT_SETTINGS,
-			await this.loadData()
-		);
+		// Need to serialize/deserialize Set as an Array
+		const loadedData = await this.loadData();
+		loadedData.pinnedNodeIds = new Set(loadedData.pinnedNodeIds);
+		this.settings = Object.assign({}, DEFAULT_SETTINGS, loadedData);
 	}
 
 	async saveSettings() {
-		await this.saveData(this.settings);
+		const dataToSave = Object.assign({}, this.settings, {
+			pinnedNodeIds: Array.from(this.settings.pinnedNodeIds),
+		});
+		await this.saveData(dataToSave);
+		this.app.workspace.trigger(SETTINGS_CHANGE_EVENT, dataToSave);
 	}
 
 	// Date format: YYYY-MM-DD
@@ -258,21 +254,135 @@ export default class CloudPlugin extends Plugin {
 		const fileName = file.basename;
 		return fileName === this.settings.latestDailyCanvasDate;
 	}
-}
 
-class CloudModal extends Modal {
-	constructor(app: App) {
-		super(app);
+	loadPatches() {
+		// Always try to patch before registering events
+		const canvasPatchResult = this.patchCanvas();
+		if (canvasPatchResult instanceof Error) {
+			console.log(
+				"Failed to patch canvas. Registering event to patch canvas when one is available."
+			);
+			const patchCanvasEvent = this.app.workspace.on(
+				"layout-change",
+				() => {
+					console.log("Layout changed. Attempting to patch canvas");
+					const result = this.patchCanvas();
+					if (!(result instanceof Error)) {
+						this.app.workspace.offref(patchCanvasEvent);
+					}
+				}
+			);
+			this.registerEvent(patchCanvasEvent);
+		}
+
+		const nodesPatchResult = this.patchNodes();
+		if (nodesPatchResult instanceof Error) {
+			console.log(
+				"Failed to patch nodes. Registering event to patch nodes when one is available."
+			);
+			const patchNodesEvent = this.app.workspace.on(
+				NODE_ADD_EVENT,
+				(node: CanvasNode) => {
+					console.log("Node added. Attempting to patch node");
+					const result = this.patchNodes();
+					if (!(result instanceof Error)) {
+						this.app.workspace.offref(patchNodesEvent);
+					}
+				}
+			);
+			this.registerEvent(patchNodesEvent);
+		}
 	}
 
-	onOpen() {
-		const { contentEl } = this;
-		contentEl.setText("Woah!");
+	patchCanvas(): void | Error {
+		// To patch the canvas prototype, we need an instance of it.
+		const canvas = this.app.workspace.getLeavesOfType("canvas").first()
+			?.view?.canvas;
+		if (canvas === undefined) {
+			return new Error("No canvas open");
+		}
+
+		const canvasPrototype: Canvas = Object.getPrototypeOf(canvas);
+		this.register(
+			around(canvasPrototype, {
+				addNode: function (
+					originalAddNode: (this: Canvas, node: CanvasNode) => void
+				) {
+					return dedupe(
+						"addNode",
+						originalAddNode,
+						function (this: Canvas, node: CanvasNode) {
+							originalAddNode.call(this, node);
+							this.app.workspace.trigger(NODE_ADD_EVENT, node);
+						}
+					);
+				},
+			})
+		);
+		console.log("Successfully patched canvas.");
 	}
 
-	onClose() {
-		const { contentEl } = this;
-		contentEl.empty();
+	patchNodes() {
+		// To patch canvas nodes, we need a canvas instance that has nodes
+		const canvas = this.app.workspace.getLeavesOfType("canvas").first()
+			?.view?.canvas;
+		const nodes = Array.from(canvas?.nodes.values() ?? []);
+		if (nodes.length === 0) {
+			return new Error("No nodes found");
+		}
+
+		// Find base class by finding the prototype of the highest class
+		// with an initialize method
+		let nodePrototype = Object.getPrototypeOf(nodes[0]);
+		while (true) {
+			const parentPrototype = Object.getPrototypeOf(nodePrototype);
+			if (!parentPrototype.hasOwnProperty("initialize")) {
+				break;
+			}
+			nodePrototype = parentPrototype;
+		}
+
+		const addHeaderToNode = this.addHeaderToNode.bind(this);
+
+		this.register(
+			around(nodePrototype as CanvasNode, {
+				initialize: function (
+					originalInitialize: (this: CanvasNode) => void
+				) {
+					return dedupe(
+						"initialize",
+						originalInitialize,
+						function (this: CanvasNode) {
+							originalInitialize.call(this);
+							addHeaderToNode(this);
+						}
+					);
+				},
+			})
+		);
+
+		// Add header to all existing nodes that have already been initialized
+		this.app.workspace
+			.getLeavesOfType("canvas")
+			.map((leaf) => leaf.view.canvas)
+			.flatMap((canvas) => Array.from(canvas.nodes.values()))
+			.filter((node) => node.initialized)
+			.forEach(addHeaderToNode);
+
+		console.log("Successfully patched nodes.");
+	}
+
+	addHeaderToNode(node: CanvasNode) {
+		if (node.isPatched) {
+			console.log("Tried to patch node twice: ", node);
+			return;
+		}
+		const nodeHeader = new NodeHeader(node, this);
+		node.containerEl.insertBefore(
+			nodeHeader.element,
+			node.containerEl.firstChild
+		);
+		node.isPatched = true;
 	}
 }
 
@@ -303,5 +413,79 @@ class CloudSettingTab extends PluginSettingTab {
 						await this.plugin.saveSettings();
 					})
 			);
+	}
+}
+
+class NodeHeader extends Component {
+	// Can only pin nodes on the latest daily canvas
+	// Should be aligned to today
+	isLatestDailyCanvas: boolean;
+
+	node: CanvasNode;
+	plugin: CloudPlugin;
+	element: HTMLElement;
+	pinButton: HTMLElement;
+
+	constructor(node: CanvasNode, plugin: CloudPlugin) {
+		super();
+		this.node = node;
+		this.plugin = plugin;
+		this.isLatestDailyCanvas = this.plugin.canvasIsLatestDailyCanvas(
+			node.canvas
+		);
+
+		this.element = createEl("div", {
+			cls: "cloud-node-header",
+			attr: {
+				"data-node-id": node.id,
+			},
+		});
+		this.pinButton = createEl("button", {
+			cls: "cloud-node-header-pin-button clickable-icon",
+		});
+		this.pinButton.addEventListener("click", () => {
+			if (this.isPinned()) {
+				this.plugin.unpinNode(node);
+			} else {
+				this.plugin.pinNode(node);
+			}
+		});
+		setIcon(this.pinButton, "pin");
+		this.element.appendChild(this.pinButton);
+
+		this.updatePinButtonVisibility();
+		this.updatePinButtonState();
+		this.registerEvent(
+			this.plugin.app.workspace.on(
+				SETTINGS_CHANGE_EVENT,
+				(settings: CloudSettings) => {
+					this.updatePinButtonVisibility();
+					this.updatePinButtonState();
+				}
+			)
+		);
+	}
+
+	isPinned(): boolean {
+		return this.plugin.settings.pinnedNodeIds.has(this.node.id);
+	}
+
+	updatePinButtonVisibility() {
+		this.isLatestDailyCanvas = this.plugin.canvasIsLatestDailyCanvas(
+			this.node.canvas
+		);
+		if (this.isLatestDailyCanvas) {
+			this.pinButton.style.display = "block";
+		} else {
+			this.pinButton.style.display = "none";
+		}
+	}
+
+	updatePinButtonState() {
+		if (this.isPinned()) {
+			this.pinButton.classList.add("pinned");
+		} else {
+			this.pinButton.classList.remove("pinned");
+		}
 	}
 }

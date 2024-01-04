@@ -1,8 +1,29 @@
-/*
+.cloud-node-header {
+	z-index: 100;
+	position: relative;
+	overflow: hidden;
+	width: 100%;
+	min-width: 100%;
+	height: 30px;
+	min-height: 30px;
+	background-color: transparent;
+}
 
-This CSS file will be included with your plugin, and
-available in the app when your plugin is enabled.
+.cloud-node-header-pin-button {
+	position: absolute;
+	top: 0rem;
+	right: 0rem;
+	box-shadow: none;
+	cursor: pointer;
+	display: none;
+}
 
-If your plugin does not need CSS, delete this file.
+.cloud-node-header-pin-button svg {
+	width: 1rem;
+	height: 1rem;
+}
 
-*/
+.cloud-node-header-pin-button.pinned svg {
+	fill: red;
+	stroke: black;
+}

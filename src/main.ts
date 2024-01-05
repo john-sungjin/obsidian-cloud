@@ -156,7 +156,7 @@ export default class CloudPlugin extends Plugin {
 	async getDailyCanvasFile(date: string): Promise<TFile | Error> {
 		const dailyCanvasFileName = `${date}.canvas`;
 		const dailyCanvasFilePath = `${this.settings.dailyCanvasFolder}/${dailyCanvasFileName}`;
-		let dailyCanvasFile = this.app.vault.getAbstractFileByPath(
+		const dailyCanvasFile = this.app.vault.getAbstractFileByPath(
 			dailyCanvasFilePath
 		) as TFile | null;
 		if (dailyCanvasFile === null) {
@@ -515,6 +515,8 @@ export class NodeHeader extends Component {
 	}
 
 	isPinned(): boolean {
+		console.log(this.node.id);
+		console.log(this.plugin.settings.pinnedNodeIds.has(this.node.id));
 		return this.plugin.settings.pinnedNodeIds.has(this.node.id);
 	}
 

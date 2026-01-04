@@ -48,17 +48,6 @@ export default class CloudPlugin extends Plugin {
 			},
 		});
 
-		// Test command. For reverse engineering.
-		this.addCommand({
-			id: "debugging",
-			name: "Run Test Command",
-			callback: async () => {
-				console.log("Running test command");
-				console.log("Canvas: ", this.getActiveCanvas());
-				console.log("Settings: ", this.settings);
-			},
-		});
-
 		this.addCommand({
 			id: "pin-selected-nodes",
 			name: "Pin selected nodes",
@@ -89,6 +78,28 @@ export default class CloudPlugin extends Plugin {
 				this.addDailyJournalToCanvas(canvas);
 			},
 		});
+
+		this.addCommand({
+			id: "test-command",
+			name: "Test Command",
+			callback: () => {
+				this.testFunction();
+			},
+		});
+	}
+
+	testFunction() {
+		console.log("Prototype of activeEditor", Object.getPrototypeOf(this.app.workspace.activeEditor))
+		console.log("Monkeypatching triggerClickableToken")
+		around(Object.getPrototypeOf(this.app.workspace.activeEditor), {
+			triggerClickableToken: function (originalTriggerClickableToken: (this: any, token: string) => void) {
+				return dedupe("triggerClickableToken", originalTriggerClickableToken, function (this: any, token: string) {
+					console.log("editor", this)
+					console.log("token", token)
+					originalTriggerClickableToken.call(this, token);
+				})
+			}
+		})
 	}
 
 	private pinOrUnpinSelectedNodes(
@@ -127,7 +138,7 @@ export default class CloudPlugin extends Plugin {
 		this.saveSettings();
 	}
 
-	onunload() {}
+	onunload() { }
 
 	getActiveCanvas(): Canvas | null {
 		const activeView = this.app.workspace.getActiveViewOfType(FileView);
@@ -178,9 +189,21 @@ export default class CloudPlugin extends Plugin {
 		}
 		const date = file.basename;
 		// @ts-expect-error
-		const dailyNote: TFile = await this.app.internalPlugins.plugins[
-			"daily-notes"
-		].instance.getDailyNote(moment(date));
+		const dailyNotesPlugin = this.app.internalPlugins.plugins["daily-notes"];
+
+		// Get or create the daily note
+		let dailyNote: TFile | null = await dailyNotesPlugin.instance.getDailyNote(moment(date));
+
+		// If daily note doesn't exist yet, create it
+		if (dailyNote === null) {
+			// @ts-expect-error - createDailyNote creates the note if it doesn't exist
+			dailyNote = await dailyNotesPlugin.instance.createDailyNote(moment(date));
+		}
+
+		if (dailyNote === null) {
+			return new Error("Failed to get or create daily note");
+		}
+
 		canvas.createFileNode({
 			file: dailyNote,
 			pos: { x: 0, y: 0 },
@@ -240,13 +263,26 @@ export default class CloudPlugin extends Plugin {
 		await leaf.openFile(dailyCanvasFile);
 
 		if (wasCreated) {
-			// Add daily journal to canvas
-			const canvas = this.getActiveCanvas();
+			// Wait for the canvas view to be fully ready
+			const canvas = await this.waitForActiveCanvas();
 			if (canvas === null) {
-				throw new Error("Active canvas is null");
+				console.error("Failed to get active canvas after waiting");
+				return;
 			}
 			await this.addDailyJournalToCanvas(canvas);
 		}
+	}
+
+	// Wait for the active canvas to be available with retries
+	private async waitForActiveCanvas(maxRetries = 10, delayMs = 100): Promise<Canvas | null> {
+		for (let i = 0; i < maxRetries; i++) {
+			const canvas = this.getActiveCanvas();
+			if (canvas !== null) {
+				return canvas;
+			}
+			await new Promise(resolve => setTimeout(resolve, delayMs));
+		}
+		return null;
 	}
 
 	canvasIsLatestDailyCanvas(canvas: Canvas): boolean {
@@ -515,8 +551,6 @@ export class NodeHeader extends Component {
 	}
 
 	isPinned(): boolean {
-		console.log(this.node.id);
-		console.log(this.plugin.settings.pinnedNodeIds.has(this.node.id));
 		return this.plugin.settings.pinnedNodeIds.has(this.node.id);
 	}
 

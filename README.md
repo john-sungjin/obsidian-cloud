@@ -12,3 +12,47 @@ Motivation: I wanted to make Obsidian to work more in line with how I think. Som
 - TODO: easier "convert to file" - converting a card to a file takes too many steps. I want it to just take the first line as the title - just like Apple Notes.
 - TODO: similar notes. See similar notes as I write.
 - TODO: spaced repetition. Start each new canvas with a random note from the past.
+
+## Development Setup
+
+### Prerequisites
+- [Bun](https://bun.sh/) installed
+- An Obsidian vault where you want to test the plugin
+
+### Building
+
+```bash
+# Install dependencies
+bun install
+
+# Build once (development)
+bun run build.ts
+
+# Build with watch mode (rebuilds on file changes)
+bun run dev
+
+# Production build (minified, no sourcemaps)
+bun run build
+```
+
+### Loading the Plugin in Obsidian
+
+The build script copies output files to `plugin-dir/`. To load the plugin in your Obsidian vault, create a symlink from `plugin-dir` to your vault's plugin directory:
+
+```bash
+# Create the symlink (run from the project root)
+ln -s /path/to/your/vault/.obsidian/plugins/cloud-plugin plugin-dir
+```
+
+For example:
+```bash
+ln -s ~/Library/Mobile\ Documents/iCloud~md~obsidian/Documents/MyVault/.obsidian/plugins/cloud-plugin plugin-dir
+```
+
+After building, the following files are copied to your vault:
+- `main.js` - The bundled plugin code
+- `manifest.json` - Plugin metadata
+- `versions.json` - Version compatibility info
+- `styles.css` - Plugin styles
+
+Then enable the plugin in Obsidian: Settings > Community plugins > Cloud.

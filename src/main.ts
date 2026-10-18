@@ -519,7 +519,7 @@ export class NodeHeader extends Component {
 			},
 		});
 		this.pinButton = createEl("button", {
-			cls: "cloud-node-header-pin-button clickable-icon",
+			cls: "cloud-node-header-pin-button",
 		});
 		this.pinButton.addEventListener("click", () => {
 			if (this.isPinned()) {
